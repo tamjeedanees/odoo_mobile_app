@@ -16,5 +16,5 @@ A FastAPI-based universal gateway that connects to any Odoo instance without req
 
 1. **Clone the repository**
 ```bash
-git clone <repository-url>
+git clone git@github.com:tamjeedanees/odoo_mobile_app.git
 cd odoo_gateway
