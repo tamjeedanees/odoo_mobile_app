@@ -11,7 +11,7 @@ public_holidays = 'resource.calendar.leaves'
 # Create a dictionary for fast lookup
 MODEL_MAP = {
     "leaves": leaves,
-    "leave_type": leave_types,
+    "leave_types": leave_types,
     "employees": employees,
     "attendances": attendances,
     "timeoffs": timeoffs,

@@ -129,23 +129,24 @@ async def create_record(
     if odoo_model == "hr.employee":
         raise HTTPException(status_code=403, detail="You are not allowed to create employee records.")
 
-    try:
-        connector = get_odoo_connector(current_user)
-        fields_meta = connector.fields_get(model=odoo_model)
-        required_fields = [name for name, meta in fields_meta.items() if meta.get('required')]
+    connector = get_odoo_connector(current_user)
+    fields_meta = connector.fields_get(model=odoo_model)
+    required_fields = [name for name, meta in fields_meta.items() if meta.get('required')]
+    
+    missing_fields = [
+        f for f in required_fields
+        if f not in request.values or request.values[f] in (None, "")
+    ]
 
+    if missing_fields:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Missing required fields: {', '.join(missing_fields)}"
+        )
+
+    try:
         if "employee_id" in fields_meta:
             request.values["employee_id"] = current_user.employee_id
-
-        missing_fields = [
-            f for f in required_fields
-            if f not in request.values or request.values[f] in (None, "")
-        ]
-        if missing_fields:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Missing required fields: {', '.join(missing_fields)}"
-            )
 
         record_id = connector.create_record(odoo_model, request.values)
 
