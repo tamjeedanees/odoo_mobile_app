@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 from app.config import settings
 from app.database import engine, Base
-from app.api.v1 import auth, odoo, hr, payroll
+from app.api.v1 import auth, odoo
 
 # Configure logging
 logging.basicConfig(
@@ -87,18 +87,6 @@ app.include_router(
     odoo.router,
     prefix=f"{settings.API_V1_STR}/odoo",
     tags=["Generic Odoo Operations"]
-)
-
-app.include_router(
-    hr.router,
-    prefix=f"{settings.API_V1_STR}/hr",
-    tags=["HR Module"]
-)
-
-app.include_router(
-    payroll.router,
-    prefix=f"{settings.API_V1_STR}/payroll",
-    tags=["Payroll Module"]
 )
 
 # Root endpoint

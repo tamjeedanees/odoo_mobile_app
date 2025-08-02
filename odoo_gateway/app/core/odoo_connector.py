@@ -153,3 +153,13 @@ class OdooConnector:
         except Exception as e:
             logger.error(f"Method call failed: {method} on {model}: {e}")
             raise Exception(f"Method call failed: {e}")
+
+    def fields_get(self, model):
+        return self.models.execute_kw(
+            self.database,
+            self.uid,
+            self.password,
+            model,
+            'fields_get',
+            []
+        )

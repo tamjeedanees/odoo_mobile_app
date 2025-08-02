@@ -39,3 +39,4 @@ class TokenData(BaseModel):
     password: str  # Store encrypted in production
     odoo_url: str
     database: str
+    employee_id: int

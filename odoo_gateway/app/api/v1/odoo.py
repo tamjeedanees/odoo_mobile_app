@@ -8,6 +8,7 @@ from app.schemas.odoo import (
     OdooSearchResponse
 )
 from app.core.odoo_connector import OdooConnector
+from app.odoo_models import MODEL_MAP
 import json
 import logging
 
@@ -31,173 +32,217 @@ def get_odoo_connector(current_user: TokenData) -> OdooConnector:
     
     return connector
 
-@router.get("/employees", response_model=OdooSearchResponse)
-async def get_employees(
-    active_only: bool = Query(True, description="Get only active employees"),
-    department_id: Optional[int] = Query(None, description="Filter by department ID"),
-    limit: Optional[int] = Query(None, description="Maximum number of records"),
+@router.get("/{model}", response_model=OdooSearchResponse)
+async def get_records(
+    model: str,
+    domain: str = Query("[]", description="Optional search domain as JSON string"),
+    fields: Optional[str] = Query(None, description="Optional fields to retrieve as JSON string; all if not specified"),
+    limit: Optional[int] = Query(None, description="Maximum number of records to return"),
+    offset: int = Query(0, description="Number of records to skip"),
     current_user: TokenData = Depends(get_current_user)
 ):
-    """Get HR employees with common filters"""
-    
+    """Fetch records from an Odoo model. If the model supports `employee_id`, restrict data to the current employee."""
+
+    odoo_model = MODEL_MAP.get(model)
+    if not odoo_model:
+        raise HTTPException(status_code=404, detail=f"Model '{model}' not found.")
+
     try:
         connector = get_odoo_connector(current_user)
-        
-        # Build domain based on filters
-        domain = []
-        if active_only:
-            domain.append(['active', '=', True])
-        if department_id:
-            domain.append(['department_id', '=', department_id])
-        
-        employees = connector.search_read(
-            model='hr.employee',
-            domain=domain,
-            fields=[
-                'name', 'job_title', 'department_id', 'work_email', 
-                'work_phone', 'employee_id', 'user_id', 'active'
-            ],
-            limit=limit
-        )
-        
-        logger.info(f"Retrieved {len(employees)} employees")
-        
-        return OdooSearchResponse(
-            success=True,
-            data=employees,
-            count=len(employees)
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving employees: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve employees: {str(e)}"
+
+        # Parse domain
+        try:
+            domain_list = json.loads(domain)
+            if not isinstance(domain_list, list):
+                raise ValueError("Domain must be a list.")
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"[{odoo_model}] Invalid domain format: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid 'domain' parameter: {e}")
+
+        # Fetch model field metadata
+        try:
+            fields_meta = connector.fields_get(model=odoo_model)
+        except Exception as e:
+            logger.error(f"[{odoo_model}] Error fetching model metadata: {e}")
+            raise HTTPException(status_code=500, detail="Failed to retrieve model fields.")
+
+        if odoo_model == "hr.employee":
+            # Special case: filter by ID for the employee model
+            domain_list.append(["id", "=", current_user.employee_id])
+            logger.info(f"[{odoo_model}] Applied ID filter for hr.employee: {current_user.employee_id}")
+        elif "employee_id" in fields_meta:
+            # General case: filter by employee_id if the model supports it
+            domain_list.append(["employee_id", "=", current_user.employee_id])
+            logger.info(f"[{odoo_model}] Applied employee_id filter: {current_user.employee_id}")
+        else:
+            logger.warning(f"[{odoo_model}] Skipping employee_id filter — field not present")
+
+        # Determine fields to fetch
+        if fields:
+            try:
+                fields_list = json.loads(fields)
+                if not isinstance(fields_list, list):
+                    raise ValueError("Fields must be a list.")
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.error(f"[{odoo_model}] Invalid fields parameter: {e}")
+                raise HTTPException(status_code=400, detail=f"Invalid 'fields' parameter: {e}")
+        else:
+            fields_list = list(fields_meta.keys())
+            logger.info(f"[{odoo_model}] No fields specified, fetching all fields.")
+
+        # Fetch records
+        records = connector.search_read(
+            model=odoo_model,
+            domain=domain_list,
+            fields=fields_list,
+            limit=limit,
+            offset=offset
         )
 
-@router.get("/departments", response_model=OdooSearchResponse)
-async def get_departments(
-    current_user: TokenData = Depends(get_current_user)
-):
-    """Get HR departments"""
-    
-    try:
-        connector = get_odoo_connector(current_user)
-        
-        departments = connector.search_read(
-            model='hr.department',
-            fields=['name', 'manager_id', 'parent_id', 'active']
-        )
-        
-        logger.info(f"Retrieved {len(departments)} departments")
-        
+        logger.info(f"[{odoo_model}] Retrieved {len(records)} records for employee_id={current_user.employee_id}")
+
         return OdooSearchResponse(
             success=True,
-            data=departments,
-            count=len(departments)
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving departments: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve departments: {str(e)}"
+            data=records,
+            count=len(records)
         )
 
-@router.get("/attendance", response_model=OdooSearchResponse)
-async def get_attendance(
-    employee_id: Optional[int] = Query(None, description="Filter by employee ID"),
-    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
-    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
-    limit: Optional[int] = Query(None, description="Maximum number of records"),
-    current_user: TokenData = Depends(get_current_user)
-):
-    """Get HR attendance records"""
-    
-    try:
-        connector = get_odoo_connector(current_user)
-        
-        # Build domain based on filters
-        domain = []
-        if employee_id:
-            domain.append(['employee_id', '=', employee_id])
-        if date_from:
-            domain.append(['check_in', '>=', f"{date_from} 00:00:00"])
-        if date_to:
-            domain.append(['check_in', '<=', f"{date_to} 23:59:59"])
-        
-        attendance = connector.search_read(
-            model='hr.attendance',
-            domain=domain,
-            fields=[
-                'employee_id', 'check_in', 'check_out', 'worked_hours'
-            ],
-            limit=limit
-        )
-        
-        logger.info(f"Retrieved {len(attendance)} attendance records")
-        
-        return OdooSearchResponse(
-            success=True,
-            data=attendance,
-            count=len(attendance)
-        )
-        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error retrieving attendance: {e}")
+        logger.exception(f"[{odoo_model}] Unexpected error: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve attendance: {str(e)}"
+            status_code=500,
+            detail=f"Failed to retrieve records from model '{odoo_model}'."
         )
 
-@router.get("/leaves", response_model=OdooSearchResponse)
-async def get_leaves(
-    employee_id: Optional[int] = Query(None, description="Filter by employee ID"),
-    state: Optional[str] = Query(None, description="Filter by state (draft, confirm, validate)"),
-    limit: Optional[int] = Query(None, description="Maximum number of records"),
+@router.post("/{model}", response_model=OdooRecordResponse)
+async def create_record(
+    model: str,
+    request: OdooRecordRequest,
     current_user: TokenData = Depends(get_current_user)
 ):
-    """Get HR leave requests"""
+    odoo_model = MODEL_MAP.get(model)
+    if not odoo_model:
+        raise HTTPException(status_code=404, detail=f"Model '{model}' not found.")
     
+    if odoo_model == "hr.employee":
+        raise HTTPException(status_code=403, detail="You are not allowed to create employee records.")
+
     try:
         connector = get_odoo_connector(current_user)
-        
-        # Build domain based on filters
-        domain = []
-        if employee_id:
-            domain.append(['employee_id', '=', employee_id])
-        if state:
-            domain.append(['state', '=', state])
-        
-        leaves = connector.search_read(
-            model='hr.leave',
-            domain=domain,
-            fields=[
-                'employee_id', 'holiday_status_id', 'request_date_from', 
-                'request_date_to', 'number_of_days', 'state', 'name'
-            ],
-            limit=limit
-        )
-        
-        logger.info(f"Retrieved {len(leaves)} leave records")
-        
-        return OdooSearchResponse(
+        fields_meta = connector.fields_get(model=odoo_model)
+        required_fields = [name for name, meta in fields_meta.items() if meta.get('required')]
+
+        if "employee_id" in fields_meta:
+            request.values["employee_id"] = current_user.employee_id
+
+        missing_fields = [
+            f for f in required_fields
+            if f not in request.values or request.values[f] in (None, "")
+        ]
+        if missing_fields:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Missing required fields: {', '.join(missing_fields)}"
+            )
+
+        record_id = connector.create_record(odoo_model, request.values)
+
+        return OdooRecordResponse(
             success=True,
-            data=leaves,
-            count=len(leaves)
+            data={"id": record_id},
+            message=f"Record created in {odoo_model} (ID: {record_id})"
         )
-        
-    except HTTPException:
-        raise
+
     except Exception as e:
-        logger.error(f"Error retrieving leaves: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve leaves: {str(e)}"
+        logger.exception(f"[{odoo_model}] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{model}/{record_id}", response_model=OdooRecordResponse)
+async def update_record(
+    model: str,
+    record_id: int,
+    request: OdooRecordRequest,
+    current_user: TokenData = Depends(get_current_user)
+):
+    odoo_model = MODEL_MAP.get(model)
+    if not odoo_model:
+        raise HTTPException(status_code=404, detail=f"Model '{model}' not found.")
+
+    try:
+        connector = get_odoo_connector(current_user)
+
+        # Load record info
+        record = connector.search_read(
+            model=odoo_model,
+            domain=[["id", "=", record_id]],
+            fields=["employee_id"]
         )
+        if not record:
+            raise HTTPException(status_code=404, detail="Record not found.")
+
+        # Restrict updates
+        if odoo_model == "hr.employee":
+            if record[0]["id"] != current_user.employee_id:
+                raise HTTPException(status_code=403, detail="You are only allowed to update your own employee record.")
+        elif "employee_id" in record[0]:
+            if record[0]["employee_id"][0] != current_user.employee_id:
+                raise HTTPException(status_code=403, detail="Not allowed to update this record.")
+
+        if "employee_id" in request.values:
+            del request.values["employee_id"]
+
+        result = connector.write_record(odoo_model, record_id, request.values)
+
+        return OdooRecordResponse(
+            success=True,
+            data={"updated": result},
+            message=f"Record {record_id} updated in {odoo_model}"
+        )
+
+    except Exception as e:
+        logger.exception(f"[{odoo_model}] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{model}/{record_id}", response_model=OdooRecordResponse)
+async def delete_record(
+    model: str,
+    record_id: int,
+    current_user: TokenData = Depends(get_current_user)
+):
+    odoo_model = MODEL_MAP.get(model)
+    if not odoo_model:
+        raise HTTPException(status_code=404, detail=f"Model '{model}' not found.")
+
+    if odoo_model == "hr.employee":
+        raise HTTPException(status_code=403, detail="You are not allowed to delete employee records.")
+
+    try:
+        connector = get_odoo_connector(current_user)
+
+        record = connector.search_read(
+            model=odoo_model,
+            domain=[["id", "=", record_id]],
+            fields=["employee_id"]
+        )
+        if not record:
+            raise HTTPException(status_code=404, detail="Record not found.")
+
+        if "employee_id" in record[0]:
+            if record[0]["employee_id"][0] != current_user.employee_id:
+                raise HTTPException(status_code=403, detail="Not allowed to delete this record.")
+
+        result = connector.delete_record(odoo_model, record_id)
+
+        return OdooRecordResponse(
+            success=True,
+            data={"deleted": result},
+            message=f"Record {record_id} deleted from {odoo_model}"
+        )
+
+    except Exception as e:
+        logger.exception(f"[{odoo_model}] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -52,7 +52,7 @@ async def validate_license(
         cache.set(
             f"session:{session_token}",
             session_data,
-            expire=300  # 5 minutes
+            expire=300
         )
         
         logger.info(f"License validated successfully: {request.license_key}")
@@ -123,9 +123,9 @@ async def login(
             user_info = connector.search_read(
                 'res.users',
                 domain=[['id', '=', connector.uid]],
-                fields=['name', 'email', 'groups_id']
+                fields=['name', 'email', 'groups_id', 'employee_id']
             )[0]
-            
+
             # Get user permissions (groups)
             groups = connector.search_read(
                 'res.groups',
@@ -134,6 +134,17 @@ async def login(
             )
             
             permissions = [group['name'] for group in groups]
+
+            employee_id = user_info.get('employee_id')
+            if isinstance(employee_id, list):
+                employee_id = employee_id[0]
+
+            if not employee_id:
+                logger.warning(f"No employee_id linked to user {connector.uid}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="This user is not linked to any employee record."
+                )
             
         except Exception as e:
             logger.error(f"Failed to get user info: {e}")
@@ -141,17 +152,18 @@ async def login(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to retrieve user information"
             )
-        
+
         # Generate access token
         token_data = {
             'license_key': session_data['license_key'],
             'user_id': connector.uid,
             'username': request.username,
-            'password': request.password,  # Store encrypted in production
+            'password': request.password,
             'odoo_url': session_data['odoo_url'],
-            'database': session_data['database']
+            'database': session_data['database'],
+            'employee_id': employee_id
         }
-        
+
         access_token = create_access_token(json.dumps(token_data))
         
         # Clean up session
@@ -164,6 +176,7 @@ async def login(
             data={
                 "access_token": access_token,
                 "token_type": "bearer",
+                "employee_id": employee_id,
                 "user_info": {
                     "id": connector.uid,
                     "name": user_info['name'],
