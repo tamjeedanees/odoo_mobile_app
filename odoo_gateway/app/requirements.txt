@@ -11,3 +11,4 @@ psycopg2-binary==2.9.9
 pydantic==2.5.0
 pydantic-settings==2.1.0
 httpx==0.25.2
+anyio==3.7.1

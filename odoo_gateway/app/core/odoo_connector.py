@@ -1,11 +1,12 @@
 import xmlrpc.client
-from typing import List, Dict, Any, Optional
 import logging
+from typing import List, Dict, Any, Optional
+import anyio
 
 logger = logging.getLogger(__name__)
 
 class OdooConnector:
-    """Universal Odoo connector using XML-RPC"""
+    """Async-compatible Odoo XML-RPC connector using anyio.to_thread.run_sync"""
     
     def __init__(self, url: str, database: str, username: str, password: str):
         self.url = url.rstrip('/')
@@ -15,36 +16,25 @@ class OdooConnector:
         self.uid = None
         self.common = None
         self.models = None
-        
-    def authenticate(self) -> bool:
-        """Authenticate with Odoo instance"""
-        try:
-            # Connect to common endpoint
+
+    async def authenticate(self) -> bool:
+        def _auth():
             self.common = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/common')
-            
-            # Get version info (optional check)
             version_info = self.common.version()
             logger.info(f"Connected to Odoo {version_info.get('server_version', 'Unknown')}")
-            
-            # Authenticate and get user ID
             self.uid = self.common.authenticate(
                 self.database, self.username, self.password, {}
             )
-            
             if self.uid:
-                # Connect to object endpoint
                 self.models = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/object')
-                logger.info(f"Successfully authenticated user {self.username} with UID {self.uid}")
+                logger.info(f"Authenticated user {self.username} (UID: {self.uid})")
                 return True
             else:
                 logger.error("Authentication failed: Invalid credentials")
                 return False
-                
-        except Exception as e:
-            logger.error(f"Authentication failed: {e}")
-            return False
-    
-    def search_read(
+        return await anyio.to_thread.run_sync(_auth)
+
+    async def search_read(
         self, 
         model: str, 
         domain: List = None, 
@@ -52,90 +42,80 @@ class OdooConnector:
         limit: int = None,
         offset: int = 0
     ) -> List[Dict[str, Any]]:
-        """Generic search_read method"""
         if not self.uid or not self.models:
             raise Exception("Not authenticated")
-            
-        try:
-            domain = domain or []
-            fields = fields or []
+
+        def _search_read():
+            domain_inner = domain or []
+            fields_inner = fields or []
             kwargs = {'offset': offset}
             if limit:
                 kwargs['limit'] = limit
-                
+
             result = self.models.execute_kw(
                 self.database, self.uid, self.password,
                 model, 'search_read',
-                [domain], {'fields': fields, **kwargs}
+                [domain_inner], {'fields': fields_inner, **kwargs}
             )
-            
             logger.info(f"Retrieved {len(result)} records from {model}")
             return result
-            
-        except Exception as e:
-            logger.error(f"Search failed for model {model}: {e}")
-            raise Exception(f"Search failed: {e}")
-    
-    def create_record(self, model: str, values: Dict[str, Any]) -> int:
-        """Create a record"""
+
+        return await anyio.to_thread.run_sync(_search_read)
+
+    async def create_record(self, model: str, values: Dict[str, Any]) -> int:
         if not self.uid or not self.models:
             raise Exception("Not authenticated")
-            
-        try:
+
+        def _create():
             record_id = self.models.execute_kw(
                 self.database, self.uid, self.password,
                 model, 'create', [values]
             )
-            
             logger.info(f"Created record {record_id} in {model}")
             return record_id
-            
-        except Exception as e:
-            logger.error(f"Create failed for model {model}: {e}")
-            raise Exception(f"Create failed: {e}")
-    
-    def write_record(self, model: str, record_id: int, values: Dict[str, Any]) -> bool:
-        """Update a record"""
+
+        return await anyio.to_thread.run_sync(_create)
+
+    async def write_record(self, model: str, record_id: int, values: Dict[str, Any]) -> bool:
         if not self.uid or not self.models:
             raise Exception("Not authenticated")
-            
-        try:
+
+        def _write():
             result = self.models.execute_kw(
                 self.database, self.uid, self.password,
                 model, 'write', [[record_id], values]
             )
-            
             logger.info(f"Updated record {record_id} in {model}")
             return result
-            
-        except Exception as e:
-            logger.error(f"Update failed for model {model}, record {record_id}: {e}")
-            raise Exception(f"Update failed: {e}")
-    
-    def delete_record(self, model: str, record_id: int) -> bool:
-        """Delete a record"""
+
+        return await anyio.to_thread.run_sync(_write)
+
+    async def delete_record(self, model: str, record_id: int) -> bool:
         if not self.uid or not self.models:
             raise Exception("Not authenticated")
-            
-        try:
+
+        def _delete():
             result = self.models.execute_kw(
                 self.database, self.uid, self.password,
                 model, 'unlink', [[record_id]]
             )
-            
             logger.info(f"Deleted record {record_id} from {model}")
             return result
-            
-        except Exception as e:
-            logger.error(f"Delete failed for model {model}, record {record_id}: {e}")
-            raise Exception(f"Delete failed: {e}")
-    
-    def call_method(self, model: str, method: str, record_ids: List[int] = None, *args, **kwargs):
-        """Call any Odoo method"""
+
+        return await anyio.to_thread.run_sync(_delete)
+
+    async def call_method(
+        self,
+        model: str,
+        method: str,
+        record_ids: Optional[List[int]] = None,
+        *args,
+        **kwargs
+    ):
         if not self.uid or not self.models:
             raise Exception("Not authenticated")
-            
-        try:
+
+        def _call():
             if record_ids:
                 result = self.models.execute_kw(
                     self.database, self.uid, self.password,
@@ -146,20 +126,40 @@ class OdooConnector:
                     self.database, self.uid, self.password,
                     model, method, list(args), kwargs
                 )
-            
             logger.info(f"Called method {method} on {model}")
             return result
-            
-        except Exception as e:
-            logger.error(f"Method call failed: {method} on {model}: {e}")
-            raise Exception(f"Method call failed: {e}")
 
-    def fields_get(self, model):
-        return self.models.execute_kw(
-            self.database,
-            self.uid,
-            self.password,
-            model,
-            'fields_get',
-            []
-        )
+        return await anyio.to_thread.run_sync(_call)
+
+    async def fields_get(self, model: str):
+        if not self.uid or not self.models:
+            raise Exception("Not authenticated")
+
+        def _fields_get():
+            return self.models.execute_kw(
+                self.database,
+                self.uid,
+                self.password,
+                model,
+                'fields_get',
+                []
+            )
+
+        return await anyio.to_thread.run_sync(_fields_get)
+
+    async def read(self, model: str, ids: list[int], fields: list[str] = None):
+        if not self.uid or not self.models:
+            raise Exception("Not authenticated")
+
+        def _read():
+            return self.models.execute_kw(
+                self.database,
+                self.uid,
+                self.password,
+                model,
+                'read',
+                [ids],
+                {"fields": fields} if fields else {}
+            )
+
+        return await anyio.to_thread.run_sync(_read)

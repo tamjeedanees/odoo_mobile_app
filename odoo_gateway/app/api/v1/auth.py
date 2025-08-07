@@ -9,7 +9,7 @@ from app.schemas.auth import (
     LoginRequest, 
     LoginResponse
 )
-from app.core.security import create_session_token, create_access_token, decode_token
+from app.core.security import create_session_token, create_access_token
 from app.core.odoo_connector import OdooConnector
 from app.core.cache import cache
 import json
@@ -24,9 +24,7 @@ async def validate_license(
     db: Session = Depends(get_db)
 ):
     """Step 1: Validate license key and return session token"""
-    
     try:
-        # Query license from database
         license_instance = db.query(LicenseInstance).filter(
             LicenseInstance.license_key == request.license_key,
             LicenseInstance.is_active == True
@@ -38,25 +36,22 @@ async def validate_license(
                 success=False,
                 error="Invalid or inactive license key"
             )
-        
-        # Generate session token
+
         session_data = {
             'license_key': request.license_key,
             'odoo_url': license_instance.odoo_url,
             'database': license_instance.database_name
         }
-        
+
         session_token = create_session_token(session_data)
-        
-        # Cache session data
+
         cache.set(
             f"session:{session_token}",
             session_data,
-            expire=300
+            expire=300  # 5 minutes
         )
-        
+
         logger.info(f"License validated successfully: {request.license_key}")
-        
         return LicenseValidationResponse(
             success=True,
             data={
@@ -74,15 +69,14 @@ async def validate_license(
             detail="Internal server error during license validation"
         )
 
+
 @router.post("/login", response_model=LoginResponse)
 async def login(
     request: LoginRequest,
     db: Session = Depends(get_db)
 ):
     """Step 2: Authenticate user with Odoo instance"""
-    
     try:
-        # Get session data
         session_data = cache.get(f"session:{request.session_token}")
         if not session_data:
             logger.warning("Invalid or expired session token")
@@ -90,19 +84,16 @@ async def login(
                 success=False,
                 error="Invalid or expired session token"
             )
-        
-        # Create Odoo connector
+
         connector = OdooConnector(
             url=session_data['odoo_url'],
             database=session_data['database'],
             username=request.username,
             password=request.password
         )
-        
-        # Authenticate with Odoo
-        auth_success = connector.authenticate()
-        
-        # Log authentication attempt
+
+        auth_success = await connector.authenticate()
+
         auth_attempt = AuthAttempt(
             license_key=session_data['license_key'],
             username=request.username,
@@ -110,42 +101,40 @@ async def login(
         )
         db.add(auth_attempt)
         db.commit()
-        
+
         if not auth_success:
             logger.warning(f"Authentication failed for user: {request.username}")
             return LoginResponse(
                 success=False,
                 error="Invalid credentials"
             )
-        
-        # Get user info from Odoo
+
         try:
-            user_info = connector.search_read(
+            user_info_list = await connector.search_read(
                 'res.users',
                 domain=[['id', '=', connector.uid]],
                 fields=['name', 'email', 'groups_id', 'employee_id']
-            )[0]
+            )
+            user_info = user_info_list[0] if user_info_list else {}
 
-            # Get user permissions (groups)
-            groups = connector.search_read(
+            group_ids = user_info.get('groups_id', [])
+            group_info = await connector.search_read(
                 'res.groups',
-                domain=[['id', 'in', user_info['groups_id']]],
+                domain=[['id', 'in', group_ids]],
                 fields=['name', 'category_id']
             )
-            
-            permissions = [group['name'] for group in groups]
+            permissions = [group['name'] for group in group_info]
 
             employee_id = user_info.get('employee_id')
             if isinstance(employee_id, list):
                 employee_id = employee_id[0]
-
             if not employee_id:
                 logger.warning(f"No employee_id linked to user {connector.uid}")
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="This user is not linked to any employee record."
                 )
-            
+
         except Exception as e:
             logger.error(f"Failed to get user info: {e}")
             raise HTTPException(
@@ -153,7 +142,6 @@ async def login(
                 detail="Failed to retrieve user information"
             )
 
-        # Generate access token
         token_data = {
             'license_key': session_data['license_key'],
             'user_id': connector.uid,
@@ -165,12 +153,10 @@ async def login(
         }
 
         access_token = create_access_token(json.dumps(token_data))
-        
-        # Clean up session
+
         cache.delete(f"session:{request.session_token}")
-        
+
         logger.info(f"User logged in successfully: {request.username}")
-        
         return LoginResponse(
             success=True,
             data={
@@ -185,7 +171,7 @@ async def login(
                 }
             }
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:

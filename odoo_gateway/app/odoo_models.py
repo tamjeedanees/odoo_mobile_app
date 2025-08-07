@@ -1,20 +1,30 @@
-# app/odoo_models.py
-
-leaves = 'hr.leave'
-leave_types = 'hr.leave.type'
-employees = 'hr.employee'
-attendances = 'hr.attendance'
-timeoffs = 'hr.leave.allocation'
-departments = 'hr.department'
-public_holidays = 'resource.calendar.leaves'
-
-# Create a dictionary for fast lookup
 MODEL_MAP = {
-    "leaves": leaves,
-    "leave_types": leave_types,
-    "employees": employees,
-    "attendances": attendances,
-    "timeoffs": timeoffs,
-    "departments": departments,
-    "public_holidays": public_holidays
+    "leaves": {
+        "model": "hr.leave",
+        "permissions": ["create", "read", "update", "delete"]
+    },
+    "leave_types": {
+        "model": "hr.leave.type",
+        "permissions": ["read"]
+    },
+    "employees": {
+        "model": "hr.employee",
+        "permissions": ["read"]
+    },
+    "attendances": {
+        "model": "hr.attendance",
+        "permissions": ["create", "read", "update"]
+    },
+    "departments": {
+        "model": "hr.department",
+        "permissions": ["read"]
+    },
+    "public_holidays": {
+        "model": "resource.calendar.leaves",
+        "permissions": ["read"]
+    },
+    "payslips": {
+        "model": "hr.payslip",
+        "permissions": ["read"]
+    }
 }
