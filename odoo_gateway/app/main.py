@@ -4,10 +4,13 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 import logging
 from contextlib import asynccontextmanager
+from app.admin import AuthAttemptAdmin, LicenseInstanceAdmin
+from sqladmin import Admin
 
 from app.config import settings
 from app.database import engine, Base
 from app.api.v1 import auth, odoo
+from app.admin import setup_admin
 
 # Configure logging
 logging.basicConfig(
@@ -88,6 +91,8 @@ app.include_router(
     prefix=f"{settings.API_V1_STR}/odoo",
     tags=["Generic Odoo Operations"]
 )
+
+setup_admin(app)
 
 # Root endpoint
 @app.get("/")
