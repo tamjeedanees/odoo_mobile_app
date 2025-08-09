@@ -26,5 +26,13 @@ MODEL_MAP = {
     "payslips": {
         "model": "hr.payslip",
         "permissions": ["read"]
+    },
+    "expenses": {
+        "model": "hr.expense",
+        "permissions": ["create", "read", "update", "delete"]
+    },
+    "expense_category": {
+        "model": "product.product",
+        "permissions": ["read"]
     }
 }

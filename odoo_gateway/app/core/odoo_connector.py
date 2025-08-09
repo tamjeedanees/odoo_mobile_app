@@ -63,9 +63,24 @@ class OdooConnector:
         return await anyio.to_thread.run_sync(_search_read)
 
     async def create_record(self, model: str, values: Dict[str, Any]) -> int:
+        """
+        Create a record in Odoo and attach any files included in 'attachments' key of values.
+        Expected format for attachments:
+        [
+          {
+            "filename": "file.pdf",
+            "content": "<base64_string>",
+            "mimetype": "application/pdf"
+          }
+        ]
+        """
         if not self.uid or not self.models:
             raise Exception("Not authenticated")
 
+        # Extract attachments if present
+        attachments = values.pop("attachments", [])
+
+        # Step 1: Create main record
         def _create():
             record_id = self.models.execute_kw(
                 self.database, self.uid, self.password,
@@ -74,7 +89,38 @@ class OdooConnector:
             logger.info(f"Created record {record_id} in {model}")
             return record_id
 
-        return await anyio.to_thread.run_sync(_create)
+        record_id = await anyio.to_thread.run_sync(_create)
+
+        # Step 2: Create attachment records
+        for att in attachments:
+            filename = att.get("filename")
+            content = att.get("content")
+            mimetype = att.get("mimetype", "application/octet-stream")
+
+            if not filename or not content:
+                logger.warning(f"Skipping attachment due to missing filename or content: {att}")
+                continue
+
+            attachment_vals = {
+                "name": filename,
+                "res_model": model,
+                "res_id": record_id,
+                "type": "binary",
+                "datas": content,
+                "mimetype": mimetype
+            }
+
+            def _attach():
+                attach_id = self.models.execute_kw(
+                    self.database, self.uid, self.password,
+                    'ir.attachment', 'create', [attachment_vals]
+                )
+                logger.info(f"Attached file {filename} to record {record_id} in {model}")
+                return attach_id
+
+            await anyio.to_thread.run_sync(_attach)
+
+        return record_id
 
     async def write_record(self, model: str, record_id: int, values: Dict[str, Any]) -> bool:
         if not self.uid or not self.models:

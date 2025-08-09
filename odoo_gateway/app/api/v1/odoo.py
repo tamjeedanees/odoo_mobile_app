@@ -158,26 +158,45 @@ async def create_record(
     connector = await get_odoo_connector(current_user)
     fields_meta = await connector.fields_get(odoo_model)
 
+    if "employee_id" in fields_meta:
+        request.values["employee_id"] = current_user.employee_id
+
     required_fields = [f for f, meta in fields_meta.items() if meta.get("required")]
-    missing_fields = [
-        f for f in required_fields
-        if f not in request.values or request.values[f] in (None, "")
-    ]
+    missing_fields = [f for f in required_fields if f not in request.values or request.values[f] in (None, "")]
+
+    # Auto-fill company_id if required and missing
+    if "company_id" in missing_fields and "company_id" in fields_meta:
+        request.values["company_id"] = current_user.company_id
+        missing_fields.remove("company_id")
+
+    # Auto-fill currency_id if required and missing
+    if "currency_id" in missing_fields and "currency_id" in fields_meta:
+        if getattr(current_user, "currency_id", None):
+            request.values["currency_id"] = current_user.currency_id
+        else:
+            # Fallback: fetch from Odoo
+            company_currency = await connector.search_read(
+                "res.company",
+                [("id", "=", current_user.company_id)],
+                ["currency_id"]
+            )
+            if company_currency and company_currency[0].get("currency_id"):
+                request.values["currency_id"] = company_currency[0]["currency_id"][0]
+        missing_fields.remove("currency_id")
+
+    # If after autofill we still have missing required fields → raise error
     if missing_fields:
         raise HTTPException(
             status_code=422,
             detail=f"Missing required fields: {', '.join(missing_fields)}"
         )
 
-    if "employee_id" in fields_meta:
-        request.values["employee_id"] = current_user.employee_id
-
     record_id = await connector.create_record(odoo_model, request.values)
 
     return OdooRecordResponse(
         success=True,
         data={"id": record_id},
-        message=f"Record created in {odoo_model} (ID: {record_id})"
+        message=f"Record created in {odoo_model} (ID: {record_id}) with {len(request.values.get('attachments', []))} attachments"
     )
 
 @router.put("/{model}/{record_id}", response_model=OdooRecordResponse)

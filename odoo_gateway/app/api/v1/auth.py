@@ -110,6 +110,7 @@ async def login(
             )
 
         try:
+            # Get user info
             user_info_list = await connector.search_read(
                 'res.users',
                 domain=[['id', '=', connector.uid]],
@@ -125,6 +126,7 @@ async def login(
             )
             permissions = [group['name'] for group in group_info]
 
+            # Extract employee_id
             employee_id = user_info.get('employee_id')
             if isinstance(employee_id, list):
                 employee_id = employee_id[0]
@@ -135,6 +137,27 @@ async def login(
                     detail="This user is not linked to any employee record."
                 )
 
+            # Get company_id from employee
+            employee_data = await connector.search_read(
+                'hr.employee',
+                domain=[('id', '=', employee_id)],
+                fields=['company_id']
+            )
+            company_id = None
+            if employee_data and employee_data[0].get('company_id'):
+                company_id = employee_data[0]['company_id'][0]
+
+            # Get currency_id from company
+            currency_id = None
+            if company_id:
+                company_data = await connector.search_read(
+                    'res.company',
+                    domain=[('id', '=', company_id)],
+                    fields=['currency_id']
+                )
+                if company_data and company_data[0].get('currency_id'):
+                    currency_id = company_data[0]['currency_id'][0]
+
         except Exception as e:
             logger.error(f"Failed to get user info: {e}")
             raise HTTPException(
@@ -142,6 +165,7 @@ async def login(
                 detail="Failed to retrieve user information"
             )
 
+        # Include company_id & currency_id in token
         token_data = {
             'license_key': session_data['license_key'],
             'user_id': connector.uid,
@@ -149,11 +173,14 @@ async def login(
             'password': request.password,
             'odoo_url': session_data['odoo_url'],
             'database': session_data['database'],
-            'employee_id': employee_id
+            'employee_id': employee_id,
+            'company_id': company_id,
+            'currency_id': currency_id
         }
 
         access_token = create_access_token(json.dumps(token_data))
 
+        # Cleanup session from cache
         cache.delete(f"session:{request.session_token}")
 
         logger.info(f"User logged in successfully: {request.username}")
@@ -163,6 +190,8 @@ async def login(
                 "access_token": access_token,
                 "token_type": "bearer",
                 "employee_id": employee_id,
+                "company_id": company_id,
+                "currency_id": currency_id,
                 "user_info": {
                     "id": connector.uid,
                     "name": user_info['name'],

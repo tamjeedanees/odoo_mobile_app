@@ -36,7 +36,9 @@ class TokenData(BaseModel):
     license_key: str
     user_id: int
     username: str
-    password: str  # Store encrypted in production
+    password: str
     odoo_url: str
     database: str
     employee_id: int
+    company_id: Optional[int] = None
+    currency_id: Optional[int] = None
