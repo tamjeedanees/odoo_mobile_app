@@ -21,11 +21,7 @@ def create_access_token(
     return encoded_jwt
 
 def create_session_token(data: dict) -> str:
-    expire = datetime.utcnow() + timedelta(
-        minutes=settings.SESSION_TOKEN_EXPIRE_MINUTES
-    )
-    
-    to_encode = {**data, "exp": expire, "type": "session"}
+    to_encode = {**data, "type": "session"}
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 

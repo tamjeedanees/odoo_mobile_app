@@ -110,59 +110,54 @@ async def login(
             )
 
         try:
-            # Get user info
+            # Step 1: get basic user info (no employee_id to avoid access error)
             user_info_list = await connector.search_read(
                 'res.users',
                 domain=[['id', '=', connector.uid]],
-                fields=['name', 'email', 'groups_id', 'employee_id']
+                fields=['name', 'email']
             )
             user_info = user_info_list[0] if user_info_list else {}
 
-            group_ids = user_info.get('groups_id', [])
-            group_info = await connector.search_read(
-                'res.groups',
-                domain=[['id', 'in', group_ids]],
-                fields=['name', 'category_id']
-            )
-            permissions = [group['name'] for group in group_info]
+            # Step 2: try to resolve employee_id
+            employee_id = None
+            company_id = None
+            currency_id = None
 
-            # Extract employee_id
-            employee_id = user_info.get('employee_id')
-            if isinstance(employee_id, list):
-                employee_id = employee_id[0]
-            if not employee_id:
-                logger.warning(f"No employee_id linked to user {connector.uid}")
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="This user is not linked to any employee record."
-                )
-
-            # Get company_id from employee
+            # preferred: match by user_id
             employee_data = await connector.search_read(
                 'hr.employee',
-                domain=[('id', '=', employee_id)],
-                fields=['company_id']
+                domain=[('user_id', '=', connector.uid)],
+                fields=['id', 'company_id']
             )
-            company_id = None
-            if employee_data and employee_data[0].get('company_id'):
-                company_id = employee_data[0]['company_id'][0]
 
-            # Get currency_id from company
-            currency_id = None
-            if company_id:
-                company_data = await connector.search_read(
-                    'res.company',
-                    domain=[('id', '=', company_id)],
-                    fields=['currency_id']
+            # fallback: match by email if user_id link not set
+            if not employee_data and user_info.get('email'):
+                employee_data = await connector.search_read(
+                    'hr.employee',
+                    domain=[('work_email', '=', user_info['email'])],
+                    fields=['id', 'company_id']
                 )
-                if company_data and company_data[0].get('currency_id'):
-                    currency_id = company_data[0]['currency_id'][0]
+
+            if employee_data:
+                employee_id = employee_data[0]['id']
+                if employee_data[0].get('company_id'):
+                    company_id = employee_data[0]['company_id'][0]
+
+                # Step 3: get currency from company
+                if company_id:
+                    company_data = await connector.search_read(
+                        'res.company',
+                        domain=[('id', '=', company_id)],
+                        fields=['currency_id']
+                    )
+                    if company_data and company_data[0].get('currency_id'):
+                        currency_id = company_data[0]['currency_id'][0]
 
         except Exception as e:
             logger.error(f"Failed to get user info: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to retrieve user information"
+                detail=f"Failed to retrieve user information: {str(e)}"
             )
 
         # Include company_id & currency_id in token
@@ -194,9 +189,8 @@ async def login(
                 "currency_id": currency_id,
                 "user_info": {
                     "id": connector.uid,
-                    "name": user_info['name'],
-                    "email": user_info.get('email', ''),
-                    "permissions": permissions
+                    "name": user_info.get('name', ''),
+                    "email": user_info.get('email', '')
                 }
             }
         )
