@@ -165,3 +165,7 @@ settings_local.py
 # Temporary files
 *.tmp
 *.temp
+
+#Alembic
+alembic/
+alembic.ini
