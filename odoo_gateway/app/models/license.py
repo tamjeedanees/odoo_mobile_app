@@ -11,6 +11,8 @@ class LicenseInstance(Base):
     company_name = Column(String, nullable=False)
     odoo_url = Column(String, nullable=False)
     database_name = Column(String, nullable=False)
+    exec_username = Column(String, nullable=False)
+    exec_password = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(DateTime(timezone=True), nullable=True)

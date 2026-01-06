@@ -14,7 +14,7 @@ class AuthAttemptAdmin(ModelView, model=AuthAttempt):
 
 
 class LicenseInstanceAdmin(ModelView, model=LicenseInstance):
-    column_list = [LicenseInstance.id, LicenseInstance.license_key, LicenseInstance.company_name, LicenseInstance.odoo_url, LicenseInstance.database_name, LicenseInstance.is_active, LicenseInstance.created_at, LicenseInstance.expires_at]
+    column_list = [LicenseInstance.id, LicenseInstance.license_key, LicenseInstance.company_name, LicenseInstance.odoo_url, LicenseInstance.database_name, LicenseInstance.exec_username, LicenseInstance.exec_password, LicenseInstance.is_active, LicenseInstance.created_at, LicenseInstance.expires_at]
     can_create = True
     can_edit = True
     can_delete = True

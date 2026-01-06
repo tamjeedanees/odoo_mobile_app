@@ -38,9 +38,11 @@ async def validate_license(
             )
 
         session_data = {
-            'license_key': request.license_key,
-            'odoo_url': license_instance.odoo_url,
-            'database': license_instance.database_name
+            "license_key": request.license_key,
+            "odoo_url": license_instance.odoo_url,
+            "database": license_instance.database_name,
+            "exec_username": license_instance.exec_username,
+            "exec_password": license_instance.exec_password,
         }
 
         session_token = create_session_token(session_data)
@@ -160,17 +162,19 @@ async def login(
                 detail=f"Failed to retrieve user information: {str(e)}"
             )
 
-        # Include company_id & currency_id in token
         token_data = {
-            'license_key': session_data['license_key'],
-            'user_id': connector.uid,
-            'username': request.username,
-            'password': request.password,
-            'odoo_url': session_data['odoo_url'],
-            'database': session_data['database'],
-            'employee_id': employee_id,
-            'company_id': company_id,
-            'currency_id': currency_id
+            "license_key": session_data["license_key"],
+            "user_id": connector.uid,
+            "username": request.username,
+            "password": request.password,
+            "odoo_url": session_data["odoo_url"],
+            "database": session_data["database"],
+            "exec_username": session_data["exec_username"],
+            "exec_password": session_data["exec_password"],
+            "employee_id": employee_id,
+            "company_id": company_id,
+            "currency_id": currency_id,
+            "is_portal": True
         }
 
         access_token = create_access_token(json.dumps(token_data))

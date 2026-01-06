@@ -37,6 +37,8 @@ class TokenData(BaseModel):
     user_id: int
     username: str
     password: str
+    exec_username: str
+    exec_password: str
     odoo_url: str
     database: str
     employee_id: int

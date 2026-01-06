@@ -65,17 +65,26 @@ async def inline_one2many_fields(
     return records
 
 async def get_odoo_connector(current_user: TokenData) -> OdooConnector:
+    """
+    Portal users authenticate → execution user runs ORM
+    """
+
     connector = OdooConnector(
         url=current_user.odoo_url,
         database=current_user.database,
-        username=current_user.username,
-        password=current_user.password
+        username=current_user.exec_username,
+        password=current_user.exec_password
     )
+
+    # Preserve identity for filtering
+    connector.identity = current_user
+
     if not await connector.authenticate():
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Failed to authenticate with Odoo instance"
+            detail="Failed to authenticate execution user with Odoo"
         )
+
     return connector
 
 @router.get("/{model}", response_model=OdooSearchResponse)
