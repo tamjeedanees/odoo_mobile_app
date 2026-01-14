@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     # Security - NO DEFAULT VALUES for sensitive data
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_HOURS = 24 * 30  # 30 days
-    SESSION_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30  # 30 days
+    ACCESS_TOKEN_EXPIRE_HOURS: int = 24 * 30  # 30 days
+    SESSION_TOKEN_EXPIRE_MINUTES: int = 24 * 30  # 30 days
     
     # Database - NO DEFAULT VALUES for sensitive data
     DATABASE_URL: str
