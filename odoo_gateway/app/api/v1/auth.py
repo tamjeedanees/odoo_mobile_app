@@ -14,6 +14,7 @@ from app.core.odoo_connector import OdooConnector
 from app.core.cache import cache
 import json
 import logging
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -50,7 +51,7 @@ async def validate_license(
         cache.set(
             f"session:{session_token}",
             session_data,
-            expire=300  # 5 minutes
+            expire=settings.SESSION_TOKEN_EXPIRE_MINUTES * 60
         )
 
         logger.info(f"License validated successfully: {request.license_key}")
@@ -178,9 +179,6 @@ async def login(
         }
 
         access_token = create_access_token(json.dumps(token_data))
-
-        # Cleanup session from cache
-        cache.delete(f"session:{request.session_token}")
 
         logger.info(f"User logged in successfully: {request.username}")
         return LoginResponse(
