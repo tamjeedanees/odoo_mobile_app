@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, status, Depends, Query
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from app.api.deps import get_current_user
 from app.schemas.auth import TokenData
 from app.schemas.odoo import (
@@ -7,7 +7,8 @@ from app.schemas.odoo import (
     OdooRecordResponse, 
     OdooSearchResponse
 )
-from typing import List, Dict, Any
+from datetime import datetime
+import pytz
 from app.core.odoo_connector import OdooConnector
 from app.odoo_models import MODEL_MAP
 import json
@@ -87,6 +88,57 @@ async def get_odoo_connector(current_user: TokenData) -> OdooConnector:
 
     return connector
 
+async def convert_attendance_datetimes(
+    records: list,
+    user_timezone: str = "UTC"
+) -> list:
+    """
+    Convert check_in and check_out times from UTC to user's timezone.
+    Specifically for hr.attendance records.
+    
+    Args:
+        records: List of attendance records from Odoo
+        user_timezone: User's timezone (e.g., 'Asia/Karachi')
+    """
+    try:
+        tz = pytz.timezone(user_timezone)
+    except pytz.exceptions.UnknownTimeZoneError:
+        logger.warning(f"Invalid timezone '{user_timezone}', using UTC")
+        tz = pytz.UTC
+    
+    for record in records:
+        # Convert check_in
+        if "check_in" in record and record["check_in"]:
+            try:
+                # Parse UTC datetime (format: "2026-01-09 21:00:00")
+                utc_dt = datetime.strptime(record["check_in"], "%Y-%m-%d %H:%M:%S")
+                utc_dt = pytz.UTC.localize(utc_dt)
+                
+                # Convert to user timezone
+                local_dt = utc_dt.astimezone(tz)
+                
+                # Replace with local time
+                record["check_in"] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception as e:
+                logger.error(f"Failed to convert check_in '{record.get('check_in')}': {e}")
+        
+        # Convert check_out
+        if "check_out" in record and record["check_out"]:
+            try:
+                # Parse UTC datetime
+                utc_dt = datetime.strptime(record["check_out"], "%Y-%m-%d %H:%M:%S")
+                utc_dt = pytz.UTC.localize(utc_dt)
+                
+                # Convert to user timezone
+                local_dt = utc_dt.astimezone(tz)
+                
+                # Replace with local time
+                record["check_out"] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception as e:
+                logger.error(f"Failed to convert check_out '{record.get('check_out')}': {e}")
+    
+    return records
+
 @router.get("/{model}", response_model=OdooSearchResponse)
 async def get_records(
     model: str,
@@ -98,7 +150,7 @@ async def get_records(
 ):
     odoo_model = get_model_info(model, "read")
     connector = await get_odoo_connector(current_user)
-
+    
     # Parse domain
     try:
         domain_list = json.loads(domain)
@@ -106,20 +158,20 @@ async def get_records(
             raise ValueError("Domain must be a list.")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid 'domain': {e}")
-
+    
     # Fetch fields metadata
     try:
         fields_meta = await connector.fields_get(odoo_model)
     except Exception as e:
         logger.error(f"[{odoo_model}] Metadata fetch failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch model metadata.")
-
+    
     # Enforce employee filter
     if odoo_model == "hr.employee":
         domain_list.append(["id", "=", current_user.employee_id])
     elif "employee_id" in fields_meta:
         domain_list.append(["employee_id", "=", current_user.employee_id])
-
+    
     # Parse fields
     if fields:
         try:
@@ -130,7 +182,7 @@ async def get_records(
             raise HTTPException(status_code=400, detail=f"Invalid 'fields': {e}")
     else:
         fields_list = list(fields_meta.keys())
-
+    
     # Perform search_read
     records = await connector.search_read(
         model=odoo_model,
@@ -139,15 +191,29 @@ async def get_records(
         limit=limit,
         offset=offset
     )
-
-    # Identify One2many fields
-    one2many_fields = [
-        field for field, meta in fields_meta.items()
-        if meta.get("type") == "one2many" and field in fields_list
-    ]
-
+    
+    # Handle One2many fields
     records = await inline_one2many_fields(records, fields_meta, fields_list, connector)
-
+    
+    # **ATTENDANCE-SPECIFIC: Convert UTC to user's local timezone**
+    if odoo_model == "hr.attendance":
+        try:
+            # Fetch user timezone from Odoo
+            user_info = await connector.search_read(
+                model="res.users",
+                domain=[["id", "=", current_user.user_id]],
+                fields=["tz"]
+            )
+            user_timezone = user_info[0].get("tz", "UTC") if user_info else "UTC"
+            
+            # Convert attendance datetimes
+            records = await convert_attendance_datetimes(records, user_timezone)
+            
+            logger.info(f"Converted {len(records)} attendance records to timezone: {user_timezone}")
+        except Exception as e:
+            logger.error(f"Failed to convert attendance datetimes: {e}")
+            # Continue without conversion rather than failing the request
+    
     return OdooSearchResponse(
         success=True,
         data=records,
