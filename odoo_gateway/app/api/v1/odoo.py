@@ -88,55 +88,60 @@ async def get_odoo_connector(current_user: TokenData) -> OdooConnector:
 
     return connector
 
+def float_hours_to_hhmm(hours: float) -> str:
+    """
+    Convert float hours to HH:MM format like Odoo frontend.
+    Example: 128.2533 -> 128:15
+    """
+    if hours is None:
+        return "0:00"
+
+    total_minutes = int(round(hours * 60))
+    hh = total_minutes // 60
+    mm = total_minutes % 60
+
+    return f"{hh}:{mm:02d}"
+
 async def convert_attendance_datetimes(
     records: list,
     user_timezone: str = "UTC"
 ) -> list:
-    """
-    Convert check_in and check_out times from UTC to user's timezone.
-    Specifically for hr.attendance records.
-    
-    Args:
-        records: List of attendance records from Odoo
-        user_timezone: User's timezone (e.g., 'Asia/Karachi')
-    """
     try:
         tz = pytz.timezone(user_timezone)
     except pytz.exceptions.UnknownTimeZoneError:
         logger.warning(f"Invalid timezone '{user_timezone}', using UTC")
         tz = pytz.UTC
-    
+
     for record in records:
-        # Convert check_in
-        if "check_in" in record and record["check_in"]:
+        # check_in
+        if record.get("check_in"):
             try:
-                # Parse UTC datetime (format: "2026-01-09 21:00:00")
                 utc_dt = datetime.strptime(record["check_in"], "%Y-%m-%d %H:%M:%S")
                 utc_dt = pytz.UTC.localize(utc_dt)
-                
-                # Convert to user timezone
-                local_dt = utc_dt.astimezone(tz)
-                
-                # Replace with local time
-                record["check_in"] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
+                record["check_in"] = utc_dt.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
             except Exception as e:
                 logger.error(f"Failed to convert check_in '{record.get('check_in')}': {e}")
-        
-        # Convert check_out
-        if "check_out" in record and record["check_out"]:
+
+        # check_out
+        if record.get("check_out"):
             try:
-                # Parse UTC datetime
                 utc_dt = datetime.strptime(record["check_out"], "%Y-%m-%d %H:%M:%S")
                 utc_dt = pytz.UTC.localize(utc_dt)
-                
-                # Convert to user timezone
-                local_dt = utc_dt.astimezone(tz)
-                
-                # Replace with local time
-                record["check_out"] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
+                record["check_out"] = utc_dt.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
             except Exception as e:
                 logger.error(f"Failed to convert check_out '{record.get('check_out')}': {e}")
-    
+
+        # worked_hours formatting like Odoo frontend
+        if "worked_hours" in record and record["worked_hours"] is not None:
+            try:
+                record["worked_hours"] = float_hours_to_hhmm(
+                    float(record["worked_hours"])
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to convert worked_hours '{record.get('worked_hours')}': {e}"
+                )
+
     return records
 
 @router.get("/{model}", response_model=OdooSearchResponse)
