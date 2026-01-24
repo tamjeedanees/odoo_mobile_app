@@ -98,38 +98,68 @@ async def login(
                 error="Invalid or inactive license key"
             )
 
-        # Step 2: Authenticate with Odoo
-        connector = OdooConnector(
+        # Step 2: Validate exec (internal/admin) credentials first
+        exec_connector = OdooConnector(
+            url=license_instance.odoo_url,
+            database=license_instance.database_name,
+            username=license_instance.exec_username,
+            password=license_instance.exec_password
+        )
+
+        exec_auth_success = await exec_connector.authenticate()
+
+        if not exec_auth_success:
+            logger.error(
+                f"Executive credentials authentication failed for license: {request.license_key}"
+            )
+            # Log failed exec auth attempt
+            auth_attempt = AuthAttempt(
+                license_key=request.license_key,
+                username=f"EXEC:{license_instance.exec_username}",
+                success="exec_failed"
+            )
+            db.add(auth_attempt)
+            db.commit()
+            
+            return LoginResponse(
+                success=False,
+                error="Invalid internal user credentials. Please contact your system administrator."
+            )
+
+        logger.info(f"Executive credentials validated successfully for license: {request.license_key}")
+
+        # Step 3: Authenticate user with Odoo
+        user_connector = OdooConnector(
             url=license_instance.odoo_url,
             database=license_instance.database_name,
             username=request.username,
             password=request.password
         )
 
-        auth_success = await connector.authenticate()
+        user_auth_success = await user_connector.authenticate()
 
-        # Log authentication attempt
+        # Log user authentication attempt
         auth_attempt = AuthAttempt(
             license_key=request.license_key,
             username=request.username,
-            success="success" if auth_success else "failed"
+            success="success" if user_auth_success else "failed"
         )
         db.add(auth_attempt)
         db.commit()
 
-        if not auth_success:
-            logger.warning(f"Authentication failed for user: {request.username}")
+        if not user_auth_success:
+            logger.warning(f"User authentication failed for user: {request.username}")
             return LoginResponse(
                 success=False,
                 error="Invalid credentials. Please check your username and password."
             )
 
-        # Step 3: Fetch user information from Odoo
+        # Step 4: Fetch user information from Odoo
         try:
             # Get basic user info
-            user_info_list = await connector.search_read(
+            user_info_list = await user_connector.search_read(
                 'res.users',
-                domain=[['id', '=', connector.uid]],
+                domain=[['id', '=', user_connector.uid]],
                 fields=['name', 'email']
             )
             user_info = user_info_list[0] if user_info_list else {}
@@ -140,15 +170,15 @@ async def login(
             currency_id = None
 
             # Try to find employee by user_id
-            employee_data = await connector.search_read(
+            employee_data = await user_connector.search_read(
                 'hr.employee',
-                domain=[('user_id', '=', connector.uid)],
+                domain=[('user_id', '=', user_connector.uid)],
                 fields=['id', 'company_id']
             )
 
             # Fallback: match by email if user_id link not set
             if not employee_data and user_info.get('email'):
-                employee_data = await connector.search_read(
+                employee_data = await user_connector.search_read(
                     'hr.employee',
                     domain=[('work_email', '=', user_info['email'])],
                     fields=['id', 'company_id']
@@ -161,7 +191,7 @@ async def login(
 
                 # Get currency from company
                 if company_id:
-                    company_data = await connector.search_read(
+                    company_data = await user_connector.search_read(
                         'res.company',
                         domain=[('id', '=', company_id)],
                         fields=['currency_id']
@@ -176,10 +206,10 @@ async def login(
                 detail=f"Failed to retrieve user information: {str(e)}"
             )
 
-        # Step 4: Create 24-hour access token with all necessary data
+        # Step 5: Create 24-hour access token with all necessary data
         token_data = {
             "license_key": request.license_key,
-            "user_id": connector.uid,
+            "user_id": user_connector.uid,
             "username": request.username,
             "password": request.password,
             "odoo_url": license_instance.odoo_url,
@@ -210,7 +240,7 @@ async def login(
                 "company_id": company_id,
                 "currency_id": currency_id,
                 "user_info": {
-                    "id": connector.uid,
+                    "id": user_connector.uid,
                     "name": user_info.get('name', ''),
                     "email": user_info.get('email', '')
                 }

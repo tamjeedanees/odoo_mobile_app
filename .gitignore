@@ -169,3 +169,14 @@ settings_local.py
 #Alembic
 alembic/
 alembic.ini
+
+# Python bytecode
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Common typo protection
+__pychache__/
+**/__pychache__/
