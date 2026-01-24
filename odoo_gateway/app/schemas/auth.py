@@ -14,7 +14,11 @@ class LicenseValidationResponse(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    session_token: str
+    """
+    Updated LoginRequest - now requires license_key instead of session_token
+    This enables direct login without prior license validation
+    """
+    license_key: str
     username: str
     password: str
 
@@ -41,6 +45,12 @@ class TokenData(BaseModel):
     exec_password: str
     odoo_url: str
     database: str
-    employee_id: int
+    employee_id: Optional[int] = None
     company_id: Optional[int] = None
     currency_id: Optional[int] = None
+    is_portal: Optional[bool] = True
+
+
+class RefreshTokenRequest(BaseModel):
+    """New schema for token refresh endpoint"""
+    refresh_token: str
