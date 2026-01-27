@@ -11,6 +11,7 @@ from app.config import settings
 from app.database import engine, Base
 from app.api.v1 import auth, odoo
 from app.admin import setup_admin
+from app.core.connection_pool import init_connection_pool, shutdown_connection_pool
 
 # Configure logging
 logging.basicConfig(
@@ -31,10 +32,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to create database tables: {e}")
     
+    # ✅ Initialize connection pool
+    try:
+        await init_connection_pool()
+        logger.info("Connection pool initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize connection pool: {e}")
+    
     yield
     
     # Shutdown
     logger.info("Shutting down Universal Odoo Gateway...")
+    
+    # ✅ Shutdown connection pool
+    try:
+        await shutdown_connection_pool()
+        logger.info("Connection pool shutdown")
+    except Exception as e:
+        logger.error(f"Error shutting down pool: {e}")
 
 # Create FastAPI app
 app = FastAPI(
@@ -110,6 +125,7 @@ if __name__ == "__main__":
         "app.main:app",
         host="0.0.0.0",
         port=8000,
+        workers=getattr(settings, 'WORKERS', 4),
         reload=settings.DEBUG,
         log_level="info"
     )

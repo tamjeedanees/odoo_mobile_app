@@ -23,6 +23,26 @@ class Settings(BaseSettings):
     
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = []
+
+    # Connection Pool
+    ODOO_CONNECTION_POOL_SIZE: int = 20
+    ODOO_CONNECTION_POOL_TIMEOUT: int = 30
+    ODOO_CONNECTION_MAX_LIFETIME: int = 300
+    ODOO_CONNECTION_IDLE_TIMEOUT: int = 60
+    
+    # Cache
+    REDIS_MAX_CONNECTIONS: int = 50
+    CACHE_FIELD_METADATA_TTL: int = 7200
+    ENABLE_CACHE: bool = True
+    
+    # Rate Limiting
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_PER_USER: int = 100
+    RATE_LIMIT_BURST: int = 20
+    
+    # Workers
+    WORKERS: int = 4
+    WORKER_CONNECTIONS: int = 1000
     
     class Config:
         env_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")

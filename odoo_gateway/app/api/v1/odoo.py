@@ -13,6 +13,7 @@ from app.core.odoo_connector import OdooConnector
 from app.odoo_models import MODEL_MAP
 import json
 import logging
+from app.core.connection_pool import get_connection_pool
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -66,27 +67,46 @@ async def inline_one2many_fields(
     return records
 
 async def get_odoo_connector(current_user: TokenData) -> OdooConnector:
-    """
-    Portal users authenticate → execution user runs ORM
-    """
-
-    connector = OdooConnector(
-        url=current_user.odoo_url,
-        database=current_user.database,
-        username=current_user.exec_username,
-        password=current_user.exec_password
-    )
-
-    # Preserve identity for filtering
-    connector.identity = current_user
-
-    if not await connector.authenticate():
+    """Get Odoo connector from connection pool - ALREADY AUTHENTICATED"""
+    pool = get_connection_pool()
+    
+    try:
+        # Get from pool (connection already authenticated - 0ms overhead)
+        connector = await pool.get_connection(
+            url=current_user.odoo_url,
+            database=current_user.database,
+            username=current_user.exec_username,
+            password=current_user.exec_password
+        )
+        
+        connector.identity = current_user
+        connector._pool_info = {
+            'url': current_user.odoo_url,
+            'database': current_user.database,
+            'username': current_user.exec_username
+        }
+        
+        return connector
+    except Exception as e:
+        logger.error(f"Failed to get connector from pool: {e}")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Failed to authenticate execution user with Odoo"
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service temporarily unavailable"
         )
 
-    return connector
+async def release_odoo_connector(connector: OdooConnector, current_user: TokenData):
+    """Return connector to pool for reuse"""
+    if hasattr(connector, '_pool_info'):
+        pool = get_connection_pool()
+        try:
+            await pool.release_connection(
+                url=connector._pool_info['url'],
+                database=connector._pool_info['database'],
+                username=connector._pool_info['username'],
+                connector=connector
+            )
+        except Exception as e:
+            logger.error(f"Error releasing connector: {e}")
 
 def float_hours_to_hhmm(hours: float) -> str:
     """
@@ -155,75 +175,78 @@ async def get_records(
 ):
     odoo_model = get_model_info(model, "read")
     connector = await get_odoo_connector(current_user)
-    
-    # Parse domain
+
     try:
-        domain_list = json.loads(domain)
-        if not isinstance(domain_list, list):
-            raise ValueError("Domain must be a list.")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid 'domain': {e}")
-    
-    # Fetch fields metadata
-    try:
-        fields_meta = await connector.fields_get(odoo_model)
-    except Exception as e:
-        logger.error(f"[{odoo_model}] Metadata fetch failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch model metadata.")
-    
-    # Enforce employee filter
-    if odoo_model == "hr.employee":
-        domain_list.append(["id", "=", current_user.employee_id])
-    elif "employee_id" in fields_meta:
-        domain_list.append(["employee_id", "=", current_user.employee_id])
-    
-    # Parse fields
-    if fields:
+        # Parse domain
         try:
-            fields_list = json.loads(fields)
-            if not isinstance(fields_list, list):
-                raise ValueError("Fields must be a list.")
+            domain_list = json.loads(domain)
+            if not isinstance(domain_list, list):
+                raise ValueError("Domain must be a list.")
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid 'fields': {e}")
-    else:
-        fields_list = list(fields_meta.keys())
-    
-    # Perform search_read
-    records = await connector.search_read(
-        model=odoo_model,
-        domain=domain_list,
-        fields=fields_list,
-        limit=limit,
-        offset=offset
-    )
-    
-    # Handle One2many fields
-    records = await inline_one2many_fields(records, fields_meta, fields_list, connector)
-    
-    # **ATTENDANCE-SPECIFIC: Convert UTC to user's local timezone**
-    if odoo_model == "hr.attendance":
+            raise HTTPException(status_code=400, detail=f"Invalid 'domain': {e}")
+        
+        # Fetch fields metadata
         try:
-            # Fetch user timezone from Odoo
-            user_info = await connector.search_read(
-                model="res.users",
-                domain=[["id", "=", current_user.user_id]],
-                fields=["tz"]
-            )
-            user_timezone = user_info[0].get("tz", "UTC") if user_info else "UTC"
-            
-            # Convert attendance datetimes
-            records = await convert_attendance_datetimes(records, user_timezone)
-            
-            logger.info(f"Converted {len(records)} attendance records to timezone: {user_timezone}")
+            fields_meta = await connector.fields_get(odoo_model)
         except Exception as e:
-            logger.error(f"Failed to convert attendance datetimes: {e}")
-            # Continue without conversion rather than failing the request
-    
-    return OdooSearchResponse(
-        success=True,
-        data=records,
-        count=len(records)
-    )
+            logger.error(f"[{odoo_model}] Metadata fetch failed: {e}")
+            raise HTTPException(status_code=500, detail="Failed to fetch model metadata.")
+        
+        # Enforce employee filter
+        if odoo_model == "hr.employee":
+            domain_list.append(["id", "=", current_user.employee_id])
+        elif "employee_id" in fields_meta:
+            domain_list.append(["employee_id", "=", current_user.employee_id])
+        
+        # Parse fields
+        if fields:
+            try:
+                fields_list = json.loads(fields)
+                if not isinstance(fields_list, list):
+                    raise ValueError("Fields must be a list.")
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid 'fields': {e}")
+        else:
+            fields_list = list(fields_meta.keys())
+        
+        # Perform search_read
+        records = await connector.search_read(
+            model=odoo_model,
+            domain=domain_list,
+            fields=fields_list,
+            limit=limit,
+            offset=offset
+        )
+        
+        # Handle One2many fields
+        records = await inline_one2many_fields(records, fields_meta, fields_list, connector)
+        
+        # **ATTENDANCE-SPECIFIC: Convert UTC to user's local timezone**
+        if odoo_model == "hr.attendance":
+            try:
+                # Fetch user timezone from Odoo
+                user_info = await connector.search_read(
+                    model="res.users",
+                    domain=[["id", "=", current_user.user_id]],
+                    fields=["tz"]
+                )
+                user_timezone = user_info[0].get("tz", "UTC") if user_info else "UTC"
+                
+                # Convert attendance datetimes
+                records = await convert_attendance_datetimes(records, user_timezone)
+                
+                logger.info(f"Converted {len(records)} attendance records to timezone: {user_timezone}")
+            except Exception as e:
+                logger.error(f"Failed to convert attendance datetimes: {e}")
+                # Continue without conversion rather than failing the request
+
+        return OdooSearchResponse(
+            success=True,
+            data=records,
+            count=len(records)
+        )
+    finally:
+        await release_odoo_connector(connector, current_user)
 
 @router.post("/{model}", response_model=OdooRecordResponse)
 async def create_record(
@@ -236,48 +259,52 @@ async def create_record(
         raise HTTPException(status_code=403, detail="Cannot create employee records.")
 
     connector = await get_odoo_connector(current_user)
-    fields_meta = await connector.fields_get(odoo_model)
 
-    if "employee_id" in fields_meta:
-        request.values["employee_id"] = current_user.employee_id
+    try:
+        fields_meta = await connector.fields_get(odoo_model)
 
-    required_fields = [f for f, meta in fields_meta.items() if meta.get("required")]
-    missing_fields = [f for f in required_fields if f not in request.values or request.values[f] in (None, "")]
+        if "employee_id" in fields_meta:
+            request.values["employee_id"] = current_user.employee_id
 
-    # Auto-fill company_id if required and missing
-    if "company_id" in missing_fields and "company_id" in fields_meta:
-        request.values["company_id"] = current_user.company_id
-        missing_fields.remove("company_id")
+        required_fields = [f for f, meta in fields_meta.items() if meta.get("required")]
+        missing_fields = [f for f in required_fields if f not in request.values or request.values[f] in (None, "")]
 
-    # Auto-fill currency_id if required and missing
-    if "currency_id" in missing_fields and "currency_id" in fields_meta:
-        if getattr(current_user, "currency_id", None):
-            request.values["currency_id"] = current_user.currency_id
-        else:
-            # Fallback: fetch from Odoo
-            company_currency = await connector.search_read(
-                "res.company",
-                [("id", "=", current_user.company_id)],
-                ["currency_id"]
+        # Auto-fill company_id if required and missing
+        if "company_id" in missing_fields and "company_id" in fields_meta:
+            request.values["company_id"] = current_user.company_id
+            missing_fields.remove("company_id")
+
+        # Auto-fill currency_id if required and missing
+        if "currency_id" in missing_fields and "currency_id" in fields_meta:
+            if getattr(current_user, "currency_id", None):
+                request.values["currency_id"] = current_user.currency_id
+            else:
+                # Fallback: fetch from Odoo
+                company_currency = await connector.search_read(
+                    "res.company",
+                    [("id", "=", current_user.company_id)],
+                    ["currency_id"]
+                )
+                if company_currency and company_currency[0].get("currency_id"):
+                    request.values["currency_id"] = company_currency[0]["currency_id"][0]
+            missing_fields.remove("currency_id")
+
+        # If after autofill we still have missing required fields → raise error
+        if missing_fields:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Missing required fields: {', '.join(missing_fields)}"
             )
-            if company_currency and company_currency[0].get("currency_id"):
-                request.values["currency_id"] = company_currency[0]["currency_id"][0]
-        missing_fields.remove("currency_id")
 
-    # If after autofill we still have missing required fields → raise error
-    if missing_fields:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Missing required fields: {', '.join(missing_fields)}"
+        record_id = await connector.create_record(odoo_model, request.values)
+
+        return OdooRecordResponse(
+            success=True,
+            data={"id": record_id},
+            message=f"Record created in {odoo_model} (ID: {record_id}) with {len(request.values.get('attachments', []))} attachments"
         )
-
-    record_id = await connector.create_record(odoo_model, request.values)
-
-    return OdooRecordResponse(
-        success=True,
-        data={"id": record_id},
-        message=f"Record created in {odoo_model} (ID: {record_id}) with {len(request.values.get('attachments', []))} attachments"
-    )
+    finally:
+        await release_odoo_connector(connector, current_user)
 
 @router.put("/{model}/{record_id}", response_model=OdooRecordResponse)
 async def update_record(
@@ -289,31 +316,34 @@ async def update_record(
     odoo_model = get_model_info(model, "update")
     connector = await get_odoo_connector(current_user)
 
-    records = await connector.search_read(
-        model=odoo_model,
-        domain=[["id", "=", record_id]],
-        fields=["employee_id"]
-    )
+    try:
+        records = await connector.search_read(
+            model=odoo_model,
+            domain=[["id", "=", record_id]],
+            fields=["employee_id"]
+        )
 
-    if not records:
-        raise HTTPException(status_code=404, detail="Record not found.")
+        if not records:
+            raise HTTPException(status_code=404, detail="Record not found.")
 
-    if odoo_model == "hr.employee":
-        if records[0]["id"] != current_user.employee_id:
-            raise HTTPException(status_code=403, detail="Can only update own record.")
-    elif "employee_id" in records[0]:
-        if records[0]["employee_id"][0] != current_user.employee_id:
-            raise HTTPException(status_code=403, detail="Not allowed to update this record.")
+        if odoo_model == "hr.employee":
+            if records[0]["id"] != current_user.employee_id:
+                raise HTTPException(status_code=403, detail="Can only update own record.")
+        elif "employee_id" in records[0]:
+            if records[0]["employee_id"][0] != current_user.employee_id:
+                raise HTTPException(status_code=403, detail="Not allowed to update this record.")
 
-    request.values.pop("employee_id", None)
+        request.values.pop("employee_id", None)
 
-    result = await connector.write_record(odoo_model, record_id, request.values)
+        result = await connector.write_record(odoo_model, record_id, request.values)
 
-    return OdooRecordResponse(
-        success=True,
-        data={"updated": result},
-        message=f"Record {record_id} updated in {odoo_model}"
-    )
+        return OdooRecordResponse(
+            success=True,
+            data={"updated": result},
+            message=f"Record {record_id} updated in {odoo_model}"
+        )
+    finally:
+        await release_odoo_connector(connector, current_user)
 
 @router.delete("/{model}/{record_id}", response_model=OdooRecordResponse)
 async def delete_record(
@@ -327,24 +357,27 @@ async def delete_record(
 
     connector = await get_odoo_connector(current_user)
 
-    records = await connector.search_read(
-        model=odoo_model,
-        domain=[["id", "=", record_id]],
-        fields=["employee_id"]
-    )
+    try:
+        records = await connector.search_read(
+            model=odoo_model,
+            domain=[["id", "=", record_id]],
+            fields=["employee_id"]
+        )
 
-    if not records:
-        raise HTTPException(status_code=404, detail="Record not found.")
+        if not records:
+            raise HTTPException(status_code=404, detail="Record not found.")
 
-    if "employee_id" in records[0]:
-        if records[0]["employee_id"][0] != current_user.employee_id:
-            raise HTTPException(status_code=403, detail="Not allowed to delete this record.")
+        if "employee_id" in records[0]:
+            if records[0]["employee_id"][0] != current_user.employee_id:
+                raise HTTPException(status_code=403, detail="Not allowed to delete this record.")
 
-    result = await connector.delete_record(odoo_model, record_id)
+        result = await connector.delete_record(odoo_model, record_id)
 
-    return OdooRecordResponse(
-        success=True,
-        data={"deleted": result},
-        message=f"Record {record_id} deleted from {odoo_model}"
-    )
+        return OdooRecordResponse(
+            success=True,
+            data={"deleted": result},
+            message=f"Record {record_id} deleted from {odoo_model}"
+        )
+    finally:
+        await release_odoo_connector(connector, current_user)
 
