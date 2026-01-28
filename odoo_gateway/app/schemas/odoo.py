@@ -24,3 +24,15 @@ class OdooSearchResponse(BaseModel):
     data: Optional[List[Dict[str, Any]]] = None
     count: Optional[int] = None
     error: Optional[str] = None
+
+class LeaveCountData(BaseModel):
+    leave_type_id: int
+    leave_type_name: str
+    total_allocated: float
+    total_consumed: float
+    remaining: float
+
+class LeaveCountResponse(BaseModel):
+    success: bool
+    data: List[LeaveCountData]
+    count: int

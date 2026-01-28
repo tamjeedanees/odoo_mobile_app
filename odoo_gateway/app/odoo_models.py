@@ -3,6 +3,10 @@ MODEL_MAP = {
         "model": "hr.leave",
         "permissions": ["create", "read", "update", "delete"]
     },
+    "leaves_allocation": {
+        "model": "hr.leave.allocation",
+        "permissions": ["create", "read", "update", "delete"]
+    },
     "leave_types": {
         "model": "hr.leave.type",
         "permissions": ["read"]

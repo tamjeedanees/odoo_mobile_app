@@ -5,7 +5,8 @@ from app.schemas.auth import TokenData
 from app.schemas.odoo import (
     OdooRecordRequest, 
     OdooRecordResponse, 
-    OdooSearchResponse
+    OdooSearchResponse,
+    LeaveCountResponse
 )
 from datetime import datetime
 import pytz
@@ -245,6 +246,87 @@ async def get_records(
             data=records,
             count=len(records)
         )
+    finally:
+        await release_odoo_connector(connector, current_user)
+
+@router.get("/leaves/count/summary", response_model=LeaveCountResponse)
+async def get_leave_count_summary(
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Get leave allocation summary for the current employee.
+    Returns total allocated and remaining leaves per leave type.
+    """
+    connector = await get_odoo_connector(current_user)
+    
+    try:
+        # Fetch all leave allocations for the employee
+        allocations = await connector.search_read(
+            model="hr.leave.allocation",
+            domain=[
+                ["employee_id", "=", current_user.employee_id],
+                ["state", "=", "validate"]  # Only validated allocations
+            ],
+            fields=[
+                "holiday_status_id",  # Leave type
+                "number_of_days",     # Total allocated
+                "number_of_days_display",  # Displayed days (if different)
+            ]
+        )
+        
+        # Fetch approved/confirmed leaves to calculate remaining
+        leaves = await connector.search_read(
+            model="hr.leave",
+            domain=[
+                ["employee_id", "=", current_user.employee_id],
+                ["state", "in", ["confirm", "validate", "validate1"]]  # Approved states
+            ],
+            fields=[
+                "holiday_status_id",
+                "number_of_days"
+            ]
+        )
+        
+        # Group by leave type and calculate
+        leave_summary = {}
+        
+        # Process allocations
+        for allocation in allocations:
+            leave_type_id = allocation["holiday_status_id"][0]
+            leave_type_name = allocation["holiday_status_id"][1]
+            
+            if leave_type_id not in leave_summary:
+                leave_summary[leave_type_id] = {
+                    "leave_type_id": leave_type_id,
+                    "leave_type_name": leave_type_name,
+                    "total_allocated": 0.0,
+                    "total_consumed": 0.0,
+                    "remaining": 0.0
+                }
+            
+            leave_summary[leave_type_id]["total_allocated"] += allocation.get("number_of_days", 0.0)
+        
+        # Process consumed leaves
+        for leave in leaves:
+            leave_type_id = leave["holiday_status_id"][0]
+            
+            if leave_type_id in leave_summary:
+                leave_summary[leave_type_id]["total_consumed"] += leave.get("number_of_days", 0.0)
+        
+        # Calculate remaining
+        for leave_type_id in leave_summary:
+            summary = leave_summary[leave_type_id]
+            summary["remaining"] = summary["total_allocated"] - summary["total_consumed"]
+        
+        return LeaveCountResponse(
+            success=True,
+            data=list(leave_summary.values()),
+            count=len(leave_summary)
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch leave count summary: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch leave summary: {str(e)}")
     finally:
         await release_odoo_connector(connector, current_user)
 
