@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import Dict, Any, Optional, List
 from app.api.deps import get_current_user
-from app.schemas.auth import TokenData
+from app.schemas.auth import TokenData, CompanyDetailsResponse
 from app.schemas.odoo import (
     OdooRecordRequest, 
     OdooRecordResponse, 
@@ -463,3 +463,103 @@ async def delete_record(
     finally:
         await release_odoo_connector(connector, current_user)
 
+
+@router.get("/company/details", response_model=CompanyDetailsResponse)
+async def get_company_details(
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Get complete company details including logo and contact information.
+    
+    Returns:
+    - Company name, logo
+    - Full address (street, city, state, zip, country)
+    - Contact info (phone, email, website)
+    - Currency information
+    """
+    connector = await get_odoo_connector(current_user)
+    
+    try:
+        # Check if company_id exists
+        if not current_user.company_id:
+            logger.warning(f"No company_id found for user: {current_user.username}")
+            return CompanyDetailsResponse(
+                success=False,
+                error="No company associated with this user"
+            )
+        
+        # Helper function to convert Odoo False to None
+        def odoo_value(value):
+            """Convert Odoo False values to None for proper validation"""
+            return None if value is False else value
+        
+        # Fetch company details
+        company_data = await connector.search_read(
+            model='res.company',
+            domain=[('id', '=', current_user.company_id)],
+            fields=[
+                'name',
+                'street',
+                'street2',
+                'city',
+                'state_id',
+                'zip',
+                'country_id',
+                'phone',
+                'mobile',
+                'email',
+                'website',
+                'currency_id',
+                'logo',
+                'vat',  # Tax ID
+                'company_registry'  # Company registration number
+            ]
+        )
+        
+        if not company_data:
+            logger.error(f"Company not found for company_id: {current_user.company_id}")
+            return CompanyDetailsResponse(
+                success=False,
+                error="Company details not found"
+            )
+        
+        comp = company_data[0]
+        
+        # Build company object
+        company_object = {
+            "id": current_user.company_id,
+            "name": odoo_value(comp.get('name')) or '',
+            "street": odoo_value(comp.get('street')),
+            "street2": odoo_value(comp.get('street2')),
+            "city": odoo_value(comp.get('city')),
+            "state_id": comp['state_id'][0] if comp.get('state_id') and comp['state_id'] else None,
+            "state_name": comp['state_id'][1] if comp.get('state_id') and comp['state_id'] else None,
+            "zip": odoo_value(comp.get('zip')),
+            "country_id": comp['country_id'][0] if comp.get('country_id') and comp['country_id'] else None,
+            "country_name": comp['country_id'][1] if comp.get('country_id') and comp['country_id'] else None,
+            "phone": odoo_value(comp.get('phone')),
+            "mobile": odoo_value(comp.get('mobile')),
+            "email": odoo_value(comp.get('email')),
+            "website": odoo_value(comp.get('website')),
+            "currency_id": comp['currency_id'][0] if comp.get('currency_id') and comp['currency_id'] else None,
+            "currency_name": comp['currency_id'][1] if comp.get('currency_id') and comp['currency_id'] else None,
+            "logo": odoo_value(comp.get('logo')),  # Base64 encoded logo
+            "vat": odoo_value(comp.get('vat')),
+            "company_registry": odoo_value(comp.get('company_registry'))
+        }
+        
+        logger.info(f"Company details retrieved for company_id: {current_user.company_id}")
+        
+        return CompanyDetailsResponse(
+            success=True,
+            data=company_object
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch company details: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve company details: {str(e)}"
+        )
+    finally:
+        await release_odoo_connector(connector, current_user)

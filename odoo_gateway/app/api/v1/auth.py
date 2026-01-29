@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, HTTPException, status, Depends
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -80,7 +81,7 @@ async def login(
     Flow:
     1. Validates license key
     2. Authenticates user with Odoo
-    3. Returns 24-hour access token
+    3. Returns 24-hour access token with employee details
     
     The access token contains all necessary information for subsequent API calls.
     """
@@ -154,50 +155,114 @@ async def login(
                 error="Invalid credentials. Please check your username and password."
             )
 
-        # Step 4: Fetch user information from Odoo
+        # Helper function to convert Odoo False to None
+        def odoo_value(value):
+            """Convert Odoo False values to None for proper validation"""
+            return None if value is False else value
+
+        # Step 4: Fetch user and employee information (PARALLEL)
         try:
-            # Get basic user info
-            user_info_list = await user_connector.search_read(
+            # Run both API calls concurrently
+            user_info_task = user_connector.search_read(
                 'res.users',
                 domain=[['id', '=', user_connector.uid]],
                 fields=['name', 'email']
             )
-            user_info = user_info_list[0] if user_info_list else {}
-
-            # Resolve employee_id and related data
-            employee_id = None
-            company_id = None
-            currency_id = None
-
-            # Try to find employee by user_id
-            employee_data = await user_connector.search_read(
+            
+            employee_task = user_connector.search_read(
                 'hr.employee',
                 domain=[('user_id', '=', user_connector.uid)],
-                fields=['id', 'company_id']
+                fields=[
+                    'id', 
+                    'name',
+                    'work_email',
+                    'work_phone',
+                    'mobile_phone',
+                    'job_title',
+                    'job_id',
+                    'department_id',
+                    'company_id',
+                    'image_1920'
+                ]
             )
+
+            # Execute in parallel
+            user_info_list, employee_data = await asyncio.gather(
+                user_info_task,
+                employee_task,
+                return_exceptions=True
+            )
+
+            # Handle potential errors
+            if isinstance(user_info_list, Exception):
+                logger.error(f"Failed to get user info: {user_info_list}")
+                user_info_list = []
+            
+            if isinstance(employee_data, Exception):
+                logger.error(f"Failed to get employee data: {employee_data}")
+                employee_data = []
+
+            user_info = user_info_list[0] if user_info_list else {}
 
             # Fallback: match by email if user_id link not set
             if not employee_data and user_info.get('email'):
                 employee_data = await user_connector.search_read(
                     'hr.employee',
                     domain=[('work_email', '=', user_info['email'])],
-                    fields=['id', 'company_id']
+                    fields=[
+                        'id', 
+                        'name',
+                        'work_email',
+                        'work_phone',
+                        'mobile_phone',
+                        'job_title',
+                        'job_id',
+                        'department_id',
+                        'company_id',
+                        'image_1920'
+                    ]
                 )
 
-            if employee_data:
-                employee_id = employee_data[0]['id']
-                if employee_data[0].get('company_id'):
-                    company_id = employee_data[0]['company_id'][0]
+            # Initialize employee data
+            employee_object = None
+            employee_id = None
+            company_id = None
+            currency_id = None
 
-                # Get currency from company
-                if company_id:
-                    company_data = await user_connector.search_read(
-                        'res.company',
-                        domain=[('id', '=', company_id)],
-                        fields=['currency_id']
-                    )
-                    if company_data and company_data[0].get('currency_id'):
-                        currency_id = company_data[0]['currency_id'][0]
+            if employee_data:
+                emp = employee_data[0]
+                employee_id = emp['id']
+                
+                # Build employee object with image
+                employee_object = {
+                    "id": emp['id'],
+                    "name": odoo_value(emp.get('name')) or '',
+                    "email": odoo_value(emp.get('work_email')),
+                    "phone": odoo_value(emp.get('work_phone')),
+                    "mobile": odoo_value(emp.get('mobile_phone')),
+                    "job_title": odoo_value(emp.get('job_title')),
+                    "job_id": emp['job_id'][0] if emp.get('job_id') and emp['job_id'] else None,
+                    "job_name": emp['job_id'][1] if emp.get('job_id') and emp['job_id'] else None,
+                    "department_id": emp['department_id'][0] if emp.get('department_id') and emp['department_id'] else None,
+                    "department_name": emp['department_id'][1] if emp.get('department_id') and emp['department_id'] else None,
+                    "image": odoo_value(emp.get('image_1920'))  # Employee image
+                }
+
+                # Extract company_id for token
+                if emp.get('company_id') and emp['company_id']:
+                    company_id = emp['company_id'][0]
+                    
+                    # Get currency_id for token (minimal company data fetch)
+                    try:
+                        company_data = await user_connector.search_read(
+                            'res.company',
+                            domain=[('id', '=', company_id)],
+                            fields=['currency_id']
+                        )
+                        if company_data and company_data[0].get('currency_id'):
+                            currency_id = company_data[0]['currency_id'][0] if company_data[0]['currency_id'] else None
+                    except Exception as e:
+                        logger.error(f"Failed to get currency_id: {e}")
 
         except Exception as e:
             logger.error(f"Failed to get user info: {e}")
@@ -243,7 +308,8 @@ async def login(
                     "id": user_connector.uid,
                     "name": user_info.get('name', ''),
                     "email": user_info.get('email', '')
-                }
+                },
+                "employee": employee_object  # Only employee data with image
             }
         )
 
@@ -255,7 +321,6 @@ async def login(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error during login"
         )
-
 
 @router.post("/refresh-token", response_model=LoginResponse)
 async def refresh_token(
