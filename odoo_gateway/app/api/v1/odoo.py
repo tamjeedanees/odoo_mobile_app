@@ -165,6 +165,58 @@ async def convert_attendance_datetimes(
 
     return records
 
+@router.get("/attendance/status", response_model=OdooSearchResponse)
+async def get_incomplete_attendance(
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Get attendance records where the employee has checked in but not yet checked out.
+    
+    Returns:
+    - Record ID
+    - Check-in datetime (converted to the user's local timezone)
+    """
+    connector = await get_odoo_connector(current_user)
+
+    try:
+        records = await connector.search_read(
+            model="hr.attendance",
+            domain=[
+                ["employee_id", "=", current_user.employee_id],
+                ["check_out", "=", False]
+            ],
+            fields=["id", "check_in"]
+        )
+
+        # Convert check_in from UTC to the user's local timezone
+        try:
+            user_info = await connector.search_read(
+                model="res.users",
+                domain=[["id", "=", current_user.user_id]],
+                fields=["tz"]
+            )
+            user_timezone = user_info[0].get("tz", "UTC") if user_info else "UTC"
+            records = await convert_attendance_datetimes(records, user_timezone)
+        except Exception as e:
+            logger.error(f"Failed to convert attendance datetimes for incomplete records: {e}")
+
+        return OdooSearchResponse(
+            success=True,
+            data=[{"id": r["id"], "check_in": r["check_in"]} for r in records],
+            count=len(records)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch incomplete attendance records: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve incomplete attendance records: {str(e)}"
+        )
+    finally:
+        await release_odoo_connector(connector, current_user)
+
 @router.get("/{model}", response_model=OdooSearchResponse)
 async def get_records(
     model: str,
